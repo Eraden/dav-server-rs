@@ -1,3 +1,5 @@
+#![allow(elided_named_lifetimes)]
+
 //! Simple in-memory filesystem.
 //!
 //! This implementation has state, so if you create a
@@ -251,13 +253,14 @@ impl DavFileSystem for MemFs {
     }
 
     fn have_props<'a>(&'a self, _path: &'a DavPath) -> BoxFuture<'a, bool> {
+        trace!("have props is always true for memory");
         future::ready(true).boxed()
     }
 
     fn patch_props<'a>(
         &'a self,
         path: &'a DavPath,
-        mut patch: Vec<(bool, DavProp)>,
+        patch: Vec<(bool, DavProp)>,
     ) -> FsFuture<Vec<(StatusCode, DavProp)>> {
         async move {
             let tree = &mut *self.tree.lock().unwrap();
@@ -265,24 +268,19 @@ impl DavFileSystem for MemFs {
             let node = tree.get_node_mut(node_id)?;
             let props = node.get_props_mut();
 
-            let mut res = Vec::new();
-
-            for (set, p) in patch.drain(..) {
-                let prop = cloneprop(&p);
-                let status = if set {
-                    props.insert(propkey(&p.namespace, &p.name), p);
-                    StatusCode::OK
-                } else {
-                    props.remove(&propkey(&p.namespace, &p.name));
+            Ok(patch.into_iter().fold(Vec::new(), |mut res, (set, p)| {
+                let prop = p.clone().remove_xml();
+                match set {
+                    true => props.insert(propkey(&p.namespace, &p.name), p),
                     // the below map was added to signify if the remove succeeded or
                     // failed. however it seems that removing non-existant properties
                     // always succeed, so just return success.
                     //  .map(|_| StatusCode::OK).unwrap_or(StatusCode::NOT_FOUND)
-                    StatusCode::OK
+                    _ => props.remove(&propkey(&p.namespace, &p.name)),
                 };
-                res.push((status, prop));
-            }
-            Ok(res)
+                res.push((StatusCode::OK, prop));
+                res
+            }))
         }
         .boxed()
     }
@@ -313,6 +311,18 @@ impl DavFileSystem for MemFs {
             p.xml.clone().ok_or(FsError::NotFound)
         }
         .boxed()
+    }
+
+    fn set_accessed<'a>(&'a self, _path: &'a DavPath, _tm: SystemTime) -> FsFuture<()> {
+        Box::pin(async { Err(FsError::NotImplemented) })
+    }
+
+    fn set_modified<'a>(&'a self, _path: &'a DavPath, _tm: SystemTime) -> FsFuture<()> {
+        Box::pin(async { Err(FsError::NotImplemented) })
+    }
+
+    fn get_quota(&self) -> FsFuture<(u64, Option<u64>)> {
+        Box::pin(async { Err(FsError::NotImplemented) })
     }
 }
 

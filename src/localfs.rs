@@ -1,9 +1,18 @@
+#![allow(elided_named_lifetimes)]
+
 //! Local filesystem access.
 //!
 //! This implementation is stateless. So the easiest way to use it
 //! is to create a new instance in your handler every time
 //! you need one.
 
+use bytes::{Buf, Bytes, BytesMut};
+use futures_util::{future, future::BoxFuture, FutureExt, Stream};
+use native_db::*;
+use native_model::{native_model, Model};
+use once_cell::sync::Lazy;
+use pin_utils::pin_mut;
+use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -18,13 +27,9 @@ use std::os::windows::prelude::*;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-use bytes::{Buf, Bytes, BytesMut};
-use futures_util::{future, future::BoxFuture, FutureExt, Stream};
-use pin_utils::pin_mut;
 use tokio::task;
 
 use libc;
@@ -100,6 +105,7 @@ pub(crate) struct LocalFsInner {
     pub macos: bool,
     pub is_file: bool,
     pub fs_access_guard: Option<Box<dyn Fn() -> Box<dyn Any> + Send + Sync + 'static>>,
+    pub db: Arc<Mutex<Database<'static>>>,
 }
 
 #[derive(Debug)]
@@ -142,6 +148,12 @@ impl LocalFs {
         case_insensitive: bool,
         macos: bool,
     ) -> Box<LocalFs> {
+        let db = Arc::new(Mutex::new(
+            Builder::new()
+                .create(&MODELS, "./sys")
+                .expect("Failed to initialize metadata database"),
+        ));
+
         let inner = LocalFsInner {
             basedir: base.as_ref().to_path_buf(),
             public,
@@ -149,6 +161,7 @@ impl LocalFs {
             case_insensitive,
             is_file: false,
             fs_access_guard: None,
+            db,
         };
         Box::new({
             LocalFs {
@@ -162,6 +175,12 @@ impl LocalFs {
     /// This is like `new()`, but it always serves this single file.
     /// The request path is ignored.
     pub fn new_file<P: AsRef<Path>>(file: P, public: bool) -> Box<LocalFs> {
+        let db = Arc::new(Mutex::new(
+            Builder::new()
+                .create(&MODELS, "./sys")
+                .expect("Failed to initialize metadata database"),
+        ));
+
         let inner = LocalFsInner {
             basedir: file.as_ref().to_path_buf(),
             public,
@@ -169,6 +188,7 @@ impl LocalFs {
             case_insensitive: false,
             is_file: true,
             fs_access_guard: None,
+            db,
         };
         Box::new({
             LocalFs {
@@ -186,6 +206,11 @@ impl LocalFs {
         macos: bool,
         fs_access_guard: Option<Box<dyn Fn() -> Box<dyn Any> + Send + Sync + 'static>>,
     ) -> Box<LocalFs> {
+        let db = Arc::new(Mutex::new(
+            Builder::new()
+                .create(&MODELS, "./sys")
+                .expect("Failed to initialize metadata database"),
+        ));
         let inner = LocalFsInner {
             basedir: base.as_ref().to_path_buf(),
             public,
@@ -193,6 +218,7 @@ impl LocalFs {
             case_insensitive,
             is_file: false,
             fs_access_guard,
+            db,
         };
         Box::new({
             LocalFs {
@@ -461,6 +487,75 @@ impl DavFileSystem for LocalFs {
             }
         }
         .boxed()
+    }
+
+    fn set_modified<'a>(&'a self, path: &'a DavPath, tm: SystemTime) -> FsFuture<()> {
+        Box::pin(async { Err(FsError::NotImplemented) })
+    }
+
+    fn set_accessed<'a>(&'a self, path: &'a DavPath, tm: SystemTime) -> FsFuture<()> {
+        Box::pin(async { Err(FsError::NotImplemented) })
+    }
+
+    fn patch_props<'a>(
+        &'a self,
+        path: &'a DavPath,
+        patch: Vec<(bool, DavProp)>,
+    ) -> FsFuture<Vec<(http::StatusCode, DavProp)>> {
+        let meta = self.inner.db.clone();
+        Box::pin(async move {
+            let lock = meta.lock().unwrap();
+            let t = lock.rw_transaction().unwrap();
+            let records = t
+                .scan()
+                .primary::<LocalFsProps>()
+                .map_err(|_| FsError::GeneralFailure)?
+                .start_with(path.as_bytes().to_vec())
+                .map_err(|_| FsError::GeneralFailure)?;
+            let rec = records
+                .into_iter()
+                .filter_map(|r| r.ok())
+                .find(|r| r.path == path.as_bytes());
+            let props = if let Some(mut rec) = rec {
+                patch.into_iter().for_each(|(set, prop)| {});
+                rec
+            } else {
+                let props = patch
+                    .into_iter()
+                    .filter_map(|(set, prop)| set.then(|| prop))
+                    .collect::<Vec<_>>();
+                LocalfsProps {
+                    path: path.as_bytes().to_vec(),
+                    props,
+                }
+            };
+            //
+            //
+            todo!()
+        })
+    }
+
+    fn get_prop<'a>(&'a self, _path: &'a DavPath, _prop: DavProp) -> FsFuture<Vec<u8>> {
+        Box::pin(async { Err(FsError::NotImplemented) })
+    }
+
+    fn get_quota(&self) -> FsFuture<(u64, Option<u64>)> {
+        Box::pin(async { Err(FsError::NotImplemented) })
+    }
+
+    fn get_props<'a>(&'a self, path: &'a DavPath, _do_content: bool) -> FsFuture<Vec<DavProp>> {
+        let meta = self.inner.db.clone();
+        Box::pin(async move {
+            let lock = meta.lock().unwrap();
+            let t = lock.r_transaction().unwrap();
+            Ok(t.scan()
+                .primary::<LocalFsProps>()
+                .map_err(|_| FsError::GeneralFailure)?
+                .start_with(path.as_bytes().to_vec())
+                .map_err(|_| FsError::GeneralFailure)?
+                .flat_map(|prop| prop.map(|p| p.props).unwrap_or_default().into_iter())
+                .collect::<Vec<_>>())
+        })
     }
 }
 
@@ -826,4 +921,20 @@ impl DavMetaData for LocalFsMetaData {
             Some(format!("{:x}", t))
         }
     }
+}
+
+static MODELS: Lazy<Models> = Lazy::new(|| {
+    let mut models = Models::new();
+    models.define::<LocalFsProps>().unwrap();
+    models
+});
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[native_model(id = 1, version = 1)]
+#[native_db]
+pub struct LocalFsProps {
+    #[primary_key]
+    pub path: Vec<u8>,
+    /// Name of the property.
+    pub props: Vec<DavProp>,
 }

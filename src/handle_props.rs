@@ -296,10 +296,8 @@ impl<C: Clone + Send + Sync + 'static> DavInner<C> {
         match prop.namespace.as_deref() {
             Some(NS_DAV_URI) => {
                 match prop.name.as_str() {
+                    "getcontentlanguage" if prop_conflict(prop) => StatusCode::CONFLICT,
                     "getcontentlanguage" => {
-                        if prop.get_text().is_none() || prop.has_child_elems() {
-                            return StatusCode::CONFLICT;
-                        }
                         // FIXME only here to make "litmus" happy, really...
                         if let Some(s) = prop.get_text() {
                             if davheaders::ContentLanguage::try_from(s.as_ref()).is_err() {
@@ -312,37 +310,22 @@ impl<C: Clone + Send + Sync + 'static> DavInner<C> {
                             StatusCode::FORBIDDEN
                         }
                     }
-                    "displayname" => {
-                        if prop.get_text().is_none() || prop.has_child_elems() {
-                            return StatusCode::CONFLICT;
-                        }
-                        if can_deadprop {
-                            StatusCode::CONTINUE
-                        } else {
-                            StatusCode::FORBIDDEN
-                        }
-                    }
-                    "getlastmodified" => {
-                        // we might allow setting modified time
-                        // by using utimes() on unix. Not yet though.
-                        if prop.get_text().is_none() || prop.has_child_elems() {
-                            return StatusCode::CONFLICT;
-                        }
-                        StatusCode::FORBIDDEN
-                    }
+                    "displayname" if prop_conflict(prop) => StatusCode::CONFLICT,
+                    "displayname" if can_deadprop => StatusCode::CONTINUE,
+                    "displayname" if can_deadprop => StatusCode::FORBIDDEN,
+                    // we might allow setting modified time
+                    // by using utimes() on unix. Not yet though.
+                    "getlastmodified" if prop_conflict(prop) => StatusCode::CONFLICT,
+                    "getlastmodified" => StatusCode::FORBIDDEN,
                     _ => StatusCode::FORBIDDEN,
                 }
             }
             Some(NS_APACHE_URI) => {
                 match prop.name.as_str() {
-                    "executable" => {
-                        // we could allow toggling the execute bit.
-                        // to be implemented.
-                        if prop.get_text().is_none() || prop.has_child_elems() {
-                            return StatusCode::CONFLICT;
-                        }
-                        StatusCode::FORBIDDEN
-                    }
+                    // we could allow toggling the execute bit.
+                    // to be implemented.
+                    "executable" if prop_conflict(prop) => StatusCode::CONFLICT,
+                    "executable" => StatusCode::FORBIDDEN,
                     _ => StatusCode::FORBIDDEN,
                 }
             }
@@ -352,7 +335,7 @@ impl<C: Clone + Send + Sync + 'static> DavInner<C> {
                     | "Win32FileAttributes"
                     | "Win32LastAccessTime"
                     | "Win32LastModifiedTime" => {
-                        if prop.get_text().is_none() || prop.has_child_elems() {
+                        if prop_conflict(prop) {
                             return StatusCode::CONFLICT;
                         }
                         // Always report back that we successfully
@@ -428,35 +411,38 @@ impl<C: Clone + Send + Sync + 'static> DavInner<C> {
         // parse xml
         let tree = Element::parse2(Cursor::new(xmldata))?;
         if tree.name != "propertyupdate" {
+            debug!("Invalid root name: {}", tree.name);
             return Err(DavError::XmlParseError);
         }
 
         let mut patch = Vec::new();
-        let mut ret = Vec::new();
         let can_deadprop = self.fs.have_props(&path, &self.credentials).await;
+        trace!("filesystem have-props: {can_deadprop}");
 
         // walk over the element tree and feed "set" and "remove" items to
         // the liveprop_set/liveprop_remove functions. If skipped by those,
         // gather .them in the "patch" Vec to be processed as dead properties.
-        for elem in tree.child_elems_iter() {
-            for n in elem
-                .child_elems_iter()
+        let mut ret = tree.child_elems_iter().fold(Vec::new(), |mut ret, elem| {
+            elem.child_elems_iter()
+                .inspect(|e| trace!(target: "xml", "e name: {}", e.name))
                 .filter(|e| e.name == "prop")
                 .flat_map(|e| e.child_elems_iter())
-            {
-                match elem.name.as_str() {
-                    "set" => match self.liveprop_set(n, can_deadprop) {
-                        StatusCode::CONTINUE => patch.push((true, element_to_davprop_full(n))),
-                        s => ret.push((s, element_to_davprop(n))),
-                    },
-                    "remove" => match self.liveprop_remove(n, can_deadprop) {
-                        StatusCode::CONTINUE => patch.push((false, element_to_davprop(n))),
-                        s => ret.push((s, element_to_davprop(n))),
-                    },
-                    _ => {}
-                }
-            }
-        }
+                .for_each(|n| {
+                    trace!(target: "xml", "element name: {}", elem.name);
+                    match elem.name.as_str() {
+                        "set" => match self.liveprop_set(n, can_deadprop) {
+                            StatusCode::CONTINUE => patch.push((true, element_to_davprop_full(n))),
+                            s => ret.push((s, element_to_davprop(n))),
+                        },
+                        "remove" => match self.liveprop_remove(n, can_deadprop) {
+                            StatusCode::CONTINUE => patch.push((false, element_to_davprop(n))),
+                            s => ret.push((s, element_to_davprop(n))),
+                        },
+                        _ => {}
+                    }
+                });
+            ret
+        });
 
         // if any set/remove failed, stop processing here.
         if ret.iter().any(|&(ref s, _)| s != &StatusCode::OK) {
@@ -511,6 +497,10 @@ impl<C: Clone + Send + Sync + 'static> DavInner<C> {
 
         Ok(res)
     }
+}
+
+fn prop_conflict(prop: &Element) -> bool {
+    prop.get_text().is_none() || prop.has_child_elems()
 }
 
 impl<C: Clone + Send + Sync + 'static> PropWriter<C> {

@@ -1,3 +1,5 @@
+#![allow(elided_named_lifetimes)]
+
 use std::{convert::Infallible, fmt::Display, net::SocketAddr, path::Path};
 
 use futures_util::{stream, StreamExt};
@@ -117,6 +119,76 @@ impl GuardedFileSystem<Filter> for FilteredFs {
         _credentials: &'a Filter,
     ) -> FsFuture<Box<dyn DavMetaData>> {
         self.inner.metadata(path, &())
+    }
+
+    fn set_accessed<'a>(
+        &'a self,
+        path: &'a DavPath,
+        tm: std::time::SystemTime,
+        _credentials: &Filter,
+    ) -> FsFuture<()> {
+        self.inner.set_accessed(path, tm, &())
+    }
+
+    fn set_modified<'a>(
+        &'a self,
+        path: &'a DavPath,
+        tm: std::time::SystemTime,
+        _credentials: &'a Filter,
+    ) -> FsFuture<()> {
+        self.inner.set_modified(path, tm, &())
+    }
+
+    fn remove_dir<'a>(&'a self, path: &'a DavPath, credentials: &'a Filter) -> FsFuture<()> {
+        self.inner.remove_dir(path, &())
+    }
+
+    fn remove_file<'a>(&'a self, path: &'a DavPath, credentials: &'a Filter) -> FsFuture<()> {
+        self.inner.remove_file(path, &())
+    }
+
+    fn create_dir<'a>(&'a self, path: &'a DavPath, credentials: &'a Filter) -> FsFuture<()> {
+        self.inner.create_dir(path, &())
+    }
+
+    fn rename<'a>(
+        &'a self,
+        from: &'a DavPath,
+        to: &'a DavPath,
+        credentials: &'a Filter,
+    ) -> FsFuture<()> {
+        self.inner.rename(from, to, &())
+    }
+
+    fn copy<'a>(
+        &'a self,
+        from: &'a DavPath,
+        to: &'a DavPath,
+        credentials: &'a Filter,
+    ) -> FsFuture<()> {
+        self.inner.copy(from, to, &())
+    }
+
+    fn get_props<'a>(
+        &'a self,
+        path: &'a DavPath,
+        do_content: bool,
+        credentials: &'a Filter,
+    ) -> FsFuture<Vec<dav_server::fs::DavProp>> {
+        self.inner.get_props(path, do_content, &())
+    }
+
+    fn get_prop<'a>(
+        &'a self,
+        path: &'a DavPath,
+        prop: dav_server::fs::DavProp,
+        credentials: &'a Filter,
+    ) -> FsFuture<Vec<u8>> {
+        self.inner.get_prop(path, prop, &())
+    }
+
+    fn get_quota<'a>(&'a self, credentials: &'a Filter) -> FsFuture<(u64, Option<u64>)> {
+        self.inner.get_quota(&())
     }
 }
 
