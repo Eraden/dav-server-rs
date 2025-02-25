@@ -104,7 +104,7 @@ impl From<std::io::Error> for FsError {
     }
 }
 /// A webdav property.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DavProp {
     /// Name of the property.
     pub name: String,

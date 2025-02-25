@@ -290,11 +290,14 @@ impl DavFileSystem for MemFs {
             let tree = &mut *self.tree.lock().unwrap();
             let node_id = tree.lookup(path.as_bytes())?;
             let node = tree.get_node(node_id)?;
-            let mut res = Vec::new();
-            for p in node.get_props().values() {
-                res.push(if do_content { p.clone() } else { cloneprop(p) });
-            }
-            Ok(res)
+
+            Ok(node.get_props().values().fold(Vec::new(), |mut res, p| {
+                res.push(match do_content {
+                    true => p.clone(),
+                    _ => p.clone().remove_xml(),
+                });
+                res
+            }))
         }
         .boxed()
     }

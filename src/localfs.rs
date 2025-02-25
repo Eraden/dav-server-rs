@@ -14,7 +14,7 @@ use once_cell::sync::Lazy;
 use pin_utils::pin_mut;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 #[cfg(unix)]
@@ -490,11 +490,17 @@ impl DavFileSystem for LocalFs {
     }
 
     fn set_modified<'a>(&'a self, path: &'a DavPath, tm: SystemTime) -> FsFuture<()> {
-        Box::pin(async { Err(FsError::NotImplemented) })
+        Box::pin(async move {
+            filetime::set_file_mtime(self.fspath(path), filetime::FileTime::from_system_time(tm));
+            Ok(())
+        })
     }
 
     fn set_accessed<'a>(&'a self, path: &'a DavPath, tm: SystemTime) -> FsFuture<()> {
-        Box::pin(async { Err(FsError::NotImplemented) })
+        Box::pin(async move {
+            filetime::set_file_atime(self.fspath(path), filetime::FileTime::from_system_time(tm));
+            Ok(())
+        })
     }
 
     fn patch_props<'a>(
@@ -504,34 +510,53 @@ impl DavFileSystem for LocalFs {
     ) -> FsFuture<Vec<(http::StatusCode, DavProp)>> {
         let meta = self.inner.db.clone();
         Box::pin(async move {
+            let path: Vec<u8> = self
+                .fspath(path)
+                .to_str()
+                .unwrap_or_default()
+                .as_bytes()
+                .to_vec();
             let lock = meta.lock().unwrap();
             let t = lock.rw_transaction().unwrap();
-            let records = t
+            let s = t
                 .scan()
                 .primary::<LocalFsProps>()
-                .map_err(|_| FsError::GeneralFailure)?
-                .start_with(path.as_bytes().to_vec())
+                .map_err(|_| FsError::GeneralFailure)?;
+            let records = s
+                .start_with(path.clone())
                 .map_err(|_| FsError::GeneralFailure)?;
             let rec = records
                 .into_iter()
                 .filter_map(|r| r.ok())
-                .find(|r| r.path == path.as_bytes());
+                .find(|r| r.path == path);
             let props = if let Some(mut rec) = rec {
-                patch.into_iter().for_each(|(set, prop)| {});
+                patch.iter().for_each(|(set, prop)| {
+                    match set {
+                        true => rec.props.insert(prop.into(), prop.clone()),
+                        false => rec.props.remove(&prop.into()),
+                    };
+                });
                 rec
             } else {
                 let props = patch
-                    .into_iter()
-                    .filter_map(|(set, prop)| set.then(|| prop))
-                    .collect::<Vec<_>>();
-                LocalfsProps {
-                    path: path.as_bytes().to_vec(),
-                    props,
-                }
+                    .iter()
+                    .filter_map(|(set, prop)| set.then(|| (PropKey::from(prop), prop.clone())))
+                    .collect::<BTreeMap<_, _>>();
+                LocalFsProps { path, props }
             };
-            //
-            //
-            todo!()
+            t.insert(props).map_err(|_| FsError::GeneralFailure)?;
+            Ok(patch
+                .into_iter()
+                .map(|(s, prop)| {
+                    (
+                        match s {
+                            true => http::StatusCode::CREATED,
+                            _ => http::StatusCode::NO_CONTENT,
+                        },
+                        prop,
+                    )
+                })
+                .collect())
         })
     }
 
@@ -543,7 +568,7 @@ impl DavFileSystem for LocalFs {
         Box::pin(async { Err(FsError::NotImplemented) })
     }
 
-    fn get_props<'a>(&'a self, path: &'a DavPath, _do_content: bool) -> FsFuture<Vec<DavProp>> {
+    fn get_props<'a>(&'a self, path: &'a DavPath, do_content: bool) -> FsFuture<Vec<DavProp>> {
         let meta = self.inner.db.clone();
         Box::pin(async move {
             let lock = meta.lock().unwrap();
@@ -553,7 +578,11 @@ impl DavFileSystem for LocalFs {
                 .map_err(|_| FsError::GeneralFailure)?
                 .start_with(path.as_bytes().to_vec())
                 .map_err(|_| FsError::GeneralFailure)?
-                .flat_map(|prop| prop.map(|p| p.props).unwrap_or_default().into_iter())
+                .flat_map(|prop| prop.map(|p| p.props).unwrap_or_default().into_values())
+                .map(|prop| match do_content {
+                    true => prop,
+                    false => prop.remove_xml(),
+                })
                 .collect::<Vec<_>>())
         })
     }
@@ -936,5 +965,23 @@ pub struct LocalFsProps {
     #[primary_key]
     pub path: Vec<u8>,
     /// Name of the property.
-    pub props: Vec<DavProp>,
+    pub props: BTreeMap<PropKey, DavProp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PropName(pub String);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PropNs(pub Option<String>);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PropKey(PropNs, PropName);
+
+impl<'prop> From<&'prop DavProp> for PropKey {
+    fn from(value: &'prop DavProp) -> Self {
+        Self(
+            PropNs(value.namespace.clone()),
+            PropName(value.name.clone()),
+        )
+    }
 }
