@@ -508,7 +508,7 @@ impl DavFileSystem for LocalFs {
         path: &'a DavPath,
         patch: Vec<(bool, DavProp)>,
     ) -> FsFuture<Vec<(http::StatusCode, DavProp)>> {
-        let meta = self.inner.db.clone();
+        let prop_store = self.inner.db.clone();
         Box::pin(async move {
             let path: Vec<u8> = self
                 .fspath(path)
@@ -516,7 +516,7 @@ impl DavFileSystem for LocalFs {
                 .unwrap_or_default()
                 .as_bytes()
                 .to_vec();
-            let lock = meta.lock().unwrap();
+            let lock = prop_store.lock().unwrap();
             let t = lock.rw_transaction().unwrap();
             let s = t
                 .scan()
@@ -560,8 +560,35 @@ impl DavFileSystem for LocalFs {
         })
     }
 
-    fn get_prop<'a>(&'a self, _path: &'a DavPath, _prop: DavProp) -> FsFuture<Vec<u8>> {
-        Box::pin(async { Err(FsError::NotImplemented) })
+    fn get_prop<'a>(&'a self, path: &'a DavPath, prop: DavProp) -> FsFuture<Vec<u8>> {
+        let prop_store = self.inner.db.clone();
+        Box::pin(async move {
+            let path: Vec<u8> = self
+                .fspath(path)
+                .to_str()
+                .unwrap_or_default()
+                .as_bytes()
+                .to_vec();
+            let lock = prop_store.lock().unwrap();
+            let t = lock.rw_transaction().unwrap();
+            let s = t
+                .scan()
+                .primary::<LocalFsProps>()
+                .map_err(|_| FsError::GeneralFailure)?;
+            let records = s
+                .start_with(path.clone())
+                .map_err(|_| FsError::GeneralFailure)?;
+            let rec = records
+                .into_iter()
+                .filter_map(|r| r.ok())
+                .find(|r| r.path == path)
+                .ok_or(FsError::NotFound)?;
+            let p = rec
+                .props
+                .get(&PropKey::from(&prop))
+                .ok_or(FsError::NotFound)?;
+            p.xml.clone().ok_or(FsError::NotFound)
+        })
     }
 
     fn get_quota(&self) -> FsFuture<(u64, Option<u64>)> {

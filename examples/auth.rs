@@ -139,15 +139,15 @@ impl GuardedFileSystem<Filter> for FilteredFs {
         self.inner.set_modified(path, tm, &())
     }
 
-    fn remove_dir<'a>(&'a self, path: &'a DavPath, credentials: &'a Filter) -> FsFuture<()> {
+    fn remove_dir<'a>(&'a self, path: &'a DavPath, _credentials: &'a Filter) -> FsFuture<()> {
         self.inner.remove_dir(path, &())
     }
 
-    fn remove_file<'a>(&'a self, path: &'a DavPath, credentials: &'a Filter) -> FsFuture<()> {
+    fn remove_file<'a>(&'a self, path: &'a DavPath, _credentials: &'a Filter) -> FsFuture<()> {
         self.inner.remove_file(path, &())
     }
 
-    fn create_dir<'a>(&'a self, path: &'a DavPath, credentials: &'a Filter) -> FsFuture<()> {
+    fn create_dir<'a>(&'a self, path: &'a DavPath, _credentials: &'a Filter) -> FsFuture<()> {
         self.inner.create_dir(path, &())
     }
 
@@ -164,7 +164,7 @@ impl GuardedFileSystem<Filter> for FilteredFs {
         &'a self,
         from: &'a DavPath,
         to: &'a DavPath,
-        credentials: &'a Filter,
+        _credentials: &'a Filter,
     ) -> FsFuture<()> {
         self.inner.copy(from, to, &())
     }
@@ -173,7 +173,7 @@ impl GuardedFileSystem<Filter> for FilteredFs {
         &'a self,
         path: &'a DavPath,
         do_content: bool,
-        credentials: &'a Filter,
+        _credentials: &'a Filter,
     ) -> FsFuture<Vec<dav_server::fs::DavProp>> {
         self.inner.get_props(path, do_content, &())
     }
@@ -182,12 +182,12 @@ impl GuardedFileSystem<Filter> for FilteredFs {
         &'a self,
         path: &'a DavPath,
         prop: dav_server::fs::DavProp,
-        credentials: &'a Filter,
+        _credentials: &'a Filter,
     ) -> FsFuture<Vec<u8>> {
         self.inner.get_prop(path, prop, &())
     }
 
-    fn get_quota<'a>(&'a self, credentials: &'a Filter) -> FsFuture<(u64, Option<u64>)> {
+    fn get_quota<'a>(&'a self, _credentials: &'a Filter) -> FsFuture<(u64, Option<u64>)> {
         self.inner.get_quota(&())
     }
 }
